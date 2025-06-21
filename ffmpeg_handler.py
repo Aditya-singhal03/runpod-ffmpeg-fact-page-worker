@@ -144,3 +144,69 @@ async def handler(job):
         }
 
 runpod.serverless.start({"handler": handler})
+#  =====================================================================================
+#  LOCAL TESTING BLOCK
+#  This block will only run when you execute the script directly
+#  with `python ffmpeg_handler.py`. It will NOT run on RunPod.
+# =====================================================================================
+if __name__ == '__main__':
+    import asyncio
+
+    # --- 1. Define the Mock Input Data ---
+    # This dictionary mimics the 'job' object the handler receives on RunPod.
+    
+    # Read the base64 audio from the file we created earlier
+    with open('audio_for_test.b64', 'r') as f:
+        test_audio_base64 = f.read()
+
+    mock_job = {
+        "id": "local-test-job",
+        "input": {
+            "video_urls": [
+                "https://videos.pexels.com/video-files/853874/853874-hd.mp4", # Forest video
+                "https://videos.pexels.com/video-files/854003/854003-hd.mp4"  # Ocean video
+            ],
+            "narration_audio_base64": test_audio_base64,
+            "caption_data": {
+                "full_text": " The curious fox jumped over the lazy dog, chasing butterflies under the golden afternoon sun.",
+                "words": [
+                    {"text": "The", "start": 0.12, "end": 0.28},
+                    {"text": "curious", "start": 0.28, "end": 0.76},
+                    {"text": "fox", "start": 0.76, "end": 1.16},
+                    {"text": "jumped", "start": 1.16, "end": 1.68},
+                    {"text": "over", "start": 1.68, "end": 2.06},
+                    {"text": "the", "start": 2.06, "end": 2.24},
+                    {"text": "lazy", "start": 2.24, "end": 2.58},
+                    {"text": "dog,", "start": 2.58, "end": 3.0},
+                    {"text": "chasing", "start": 3.32, "end": 3.74},
+                    {"text": "butterflies", "start": 3.74, "end": 4.26},
+                    {"text": "under", "start": 4.26, "end": 4.86},
+                    {"text": "the", "start": 4.86, "end": 5.0},
+                    {"text": "golden", "start": 5.0, "end": 5.4},
+                    {"text": "afternoon", "start": 5.4, "end": 6.04},
+                    {"text": "sun.", "start": 6.04, "end": 6.44}
+                ]
+            }
+        }
+    }
+
+    print("--- Starting Local Test ---")
+    
+    # --- 2. Run the Handler Function ---
+    # Use asyncio.run() because our handler is an async function.
+    result = asyncio.run(handler(mock_job))
+
+    # --- 3. Process the Output ---
+    if "error" in result:
+        print(f"\n--- Test Failed ---")
+        print(f"Error: {result['error']}")
+        if "details" in result:
+            print(f"Details: {result['details']}")
+    else:
+        # Decode the returned base64 video and save it to a file
+        output_filename = "local_test_output.mp4"
+        with open(output_filename, "wb") as f:
+            f.write(base64.b64decode(result['video_base64']))
+        
+        print(f"\n--- Test Succeeded! ---")
+        print(f"Final video saved as '{output_filename}'. Please open and review it.")
