@@ -137,7 +137,7 @@ async def handler(job):
             video_data = f.read()
         
         base64_video = base64.b64encode(video_data).decode('utf-8')
-        
+        print(f"Base64 video created")
         return {
             "video_base64": base64_video,
             "filename": os.path.basename(output_video_path)
