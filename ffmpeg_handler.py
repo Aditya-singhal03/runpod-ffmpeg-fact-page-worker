@@ -1,4 +1,3 @@
-# ffmpeg_handler.py (Final, Corrected Version for Trailing Semicolon)
 import runpod
 import subprocess
 import os
@@ -157,10 +156,17 @@ async def handler(job):
             print("FFmpeg STDERR:", e.stderr)
             return {"error": "FFmpeg processing failed.", "details": e.stderr}
 
-        with open(output_video_path, "rb") as f:
-            video_data = f.read()
-        base64_video = base64.b64encode(video_data).decode('utf-8')
-        return { "video_base64": base64_video, "filename": os.path.basename(output_video_path) }
+        print(f"Uploading final video from {output_video_path}...")
+        download_url = upload_to_gofile(output_video_path)
+
+        if not download_url:
+            return {"error": "Video was generated but failed to upload."}
+        
+        # --- 5. Return the URL, not the file data ---
+        return {
+            "video_url": download_url,
+            "filename": os.path.basename(output_video_path)
+        }
 
 # Start the RunPod serverless handler
 runpod.serverless.start({"handler": handler})
