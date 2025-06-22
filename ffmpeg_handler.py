@@ -1,4 +1,4 @@
-# ffmpeg_handler.py (Final, Production-Ready Version)
+# ffmpeg_handler.py (Final, Corrected Version for Trailing Semicolon)
 import runpod
 import subprocess
 import os
@@ -50,47 +50,50 @@ async def handler(job):
         caption_data = job_input.get("caption_data", {})
         words_data = caption_data.get("words", [])
 
-        # --- 2. Write the Complex Filter Graph to a File ---
-        filter_script_path = os.path.join(temp_dir, "filters.txt")
-        with open(filter_script_path, "w") as f:
-            # Chain 1: Stitch video streams together
-            video_streams = "".join([f"[{i}:v]" for i in range(len(input_video_paths))])
-            f.write(f"{video_streams}concat=n={len(input_video_paths)}:v=1:a=0[stitched_v];\n")
+        # --- 2. Build the Complex Filter Graph ---
+        # We build a list of filter chains first, then join them.
+        filter_chains = []
 
-            # Chain 2: Speed up, normalize framerate, and format for Reels
-            f.write("[stitched_v]setpts=0.5*PTS,fps=30,scale=1080:1920,format=yuv420p[formatted_v];\n")
+        # Chain 1: Stitch video streams together
+        video_streams = "".join([f"[{i}:v]" for i in range(len(input_video_paths))])
+        # This concat filter also discards the audio from the source videos (a=0)
+        filter_chains.append(f"{video_streams}concat=n={len(input_video_paths)}:v=1:a=0[stitched_v]")
 
-            # Chain 3: Add animated captions
-            current_video_stream = "[formatted_v]"
-            if words_data:
-                for i, word_info in enumerate(words_data):
-                    clean_text = ffmpeg_escape(word_info['text'])
-                    start = word_info['start']
-                    end = word_info['end']
-                    
-                    # Define the single, correct font path inside the Docker container
-                    font_path = '/usr/share/fonts/truetype/Anton-Regular.ttf'
-                    
-                    # Escape the path for safety
-                    escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
-                    
-                    output_stream_label = f"[v_caption_{i}]"
-                    
-                    filter_line = (
-                        f"{current_video_stream}"
-                        f"drawtext="
-                        f"fontfile='{escaped_font_path}':"
-                        f"text='{clean_text}':"
-                        f"fontcolor=white:fontsize=120:borderw=8:bordercolor=black:"
-                        f"x=(w-text_w)/2:"
-                        f"y=(h-text_h)/2 + h*0.2:"
-                        f"enable='between(t,{start},{end})'"
-                        f"{output_stream_label};\n"
-                    )
-                    f.write(filter_line)
-                    current_video_stream = output_stream_label
+        # Chain 2: Speed up, normalize framerate, and format for Reels
+        filter_chains.append("[stitched_v]setpts=0.5*PTS,fps=30,scale=1080:1920,format=yuv420p[formatted_v]")
+
+        # Chain 3: Add animated captions
+        current_video_stream = "[formatted_v]"
+        if words_data:
+            for i, word_info in enumerate(words_data):
+                clean_text = ffmpeg_escape(word_info['text'])
+                start = word_info['start']
+                end = word_info['end']
+                
+                font_path = '/usr/share/fonts/truetype/Anton-Regular.ttf'
+                escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
+                output_stream_label = f"[v_caption_{i}]"
+                
+                filter_chain_link = (
+                    f"{current_video_stream}"
+                    f"drawtext="
+                    f"fontfile='{escaped_font_path}':"
+                    f"text='{clean_text}':"
+                    f"fontcolor=white:fontsize=120:borderw=8:bordercolor=black:"
+                    f"x=(w-text_w)/2:"
+                    f"y=(h-text_h)/2 + h*0.2:"
+                    f"enable='between(t,{start},{end})'"
+                    f"{output_stream_label}"
+                )
+                filter_chains.append(filter_chain_link)
+                current_video_stream = output_stream_label
         
         final_video_map = current_video_stream
+        
+        # Write the final, correctly joined filter graph to the script file
+        filter_script_path = os.path.join(temp_dir, "filters.txt")
+        with open(filter_script_path, "w") as f:
+            f.write(";\n".join(filter_chains)) # Join with semicolon and newline
 
         # --- 3. Build and Execute the FFmpeg Command ---
         ffmpeg_cmd = ['ffmpeg', '-y']
