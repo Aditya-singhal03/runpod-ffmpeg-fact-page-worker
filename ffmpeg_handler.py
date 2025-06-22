@@ -1,4 +1,3 @@
-# ffmpeg_handler.py (Final, Robust Version with Proper Escaping)
 import runpod
 import subprocess
 import os
@@ -9,16 +8,10 @@ import requests
 import asyncio
 
 def ffmpeg_escape(text):
-    """Robustly escapes text for use in an FFmpeg drawtext filter."""
+    """Cleans text for use in an FFmpeg drawtext filter's text option."""
     text = str(text)
-    # First, escape the backslash itself
-    text = text.replace('\\', '\\\\')
-    # Then, escape all other special characters
-    text = text.replace('%', '\\%')
-    text = text.replace(':', '\\:')
-    text = text.replace("'", "") # FFmpeg has issues with escaped single quotes in scripts, so we remove them
-    text = text.replace('"', '') # Also remove double quotes
-    return text
+    # Remove characters that can break the filter syntax.
+    return text.replace("'", "").replace('"', '')
 
 def download_file(url, local_filename):
     """Downloads a file from a URL to a local path."""
@@ -36,7 +29,7 @@ def download_file(url, local_filename):
 
 async def handler(job):
     job_input = job['input']
-    print(f"Job Input Received: {json.dumps(job_input, indent=2)}")
+    print(f"Job Input Received: {job['id']}")
 
     with tempfile.TemporaryDirectory(dir="/tmp") as temp_dir:
         # --- 1. Download and Prepare Inputs ---
@@ -64,65 +57,35 @@ async def handler(job):
             video_streams = "".join([f"[{i}:v]" for i in range(len(input_video_paths))])
             f.write(f"{video_streams}concat=n={len(input_video_paths)}:v=1:a=0[stitched_v];\n")
 
-            # Chain 2: Format for Reels aspect ratio
-            f.write(
-                "[stitched_v]setpts=0.5*PTS,fps=30,scale=1080:1920,format=yuv420p[formatted_v];\n"
-            )
+            # Chain 2: Speed up, normalize framerate, and format for Reels
+            f.write("[stitched_v]setpts=0.5*PTS,fps=30,scale=1080:1920,format=yuv420p[formatted_v];\n")
 
             # Chain 3: Add animated captions
             current_video_stream = "[formatted_v]"
             if words_data:
+                # --- THIS IS THE CLEANED-UP LOOP ---
                 for i, word_info in enumerate(words_data):
-                    # --- THE FIX: Use the robust escape function ---
-                    text = ffmpeg_escape(word_info['text'])
+                    clean_text = ffmpeg_escape(word_info['text'])
                     start = word_info['start']
                     end = word_info['end']
                     
-                    font_path = '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf' # Linux path
-                    if not os.path.exists(font_path):
-                        font_path = os.path.expanduser('~/Library/Fonts/NotoSans-Bold.ttf') # macOS path
-                    
-                    # Use the robust escape function on the font path too
-                    escaped_font_path = ffmpeg_escape(font_path)
-                    
-                    output_stream_label = f"[v_caption_{i}]"
-                    
-                    # Note: text is NOT in quotes, fontfile IS in single quotes
-                    clean_text = word_info['text'].strip().replace("'", "").replace('"', '')
-
-                    start = word_info['start']
-                    end = word_info['end']
-
+                    # Define the font path inside the Docker container
+                    # This path is set in your Dockerfile.
                     font_path = '/usr/share/fonts/truetype/Anton-Regular.ttf'
-                    # For local testing on your Mac, we need a local path.
-                    # Assuming you placed the font in a 'fonts' subfolder in your project.
-                    # if not os.path.exists(font_path):
-                    #     font_path = os.path.join(os.path.dirname(__file__), 'fonts', 'Anton-Regular.ttf')
-
-                    # # If on macOS, check for the local font path
-                    # if not os.path.exists(font_path):
-                    #     font_path = os.path.expanduser('~/Library/Fonts/NotoSans-ExtraBold.ttf') # macOS path
-                    #     if not os.path.exists(font_path):
-                    #         font_path = os.path.expanduser('~/Library/Fonts/NotoSans-Bold.ttf') # Fallback
-
-                    # Escape the font path for safety, especially for Windows paths if you ever test there.
+                    
+                    # Escape the path for safety (good practice)
                     escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
-
+                    
                     output_stream_label = f"[v_caption_{i}]"
-
-                    # --- THE CRUCIAL FIX IS HERE: `text='{clean_text}'` ---
-                    # We now enclose the text value in its own single quotes.
+                    
                     filter_line = (
                         f"{current_video_stream}"
                         f"drawtext="
                         f"fontfile='{escaped_font_path}':"
                         f"text='{clean_text}':"
-                        f"fontcolor=white:"
-                        f"fontsize=120:"         # Increased font size for more impact
-                        f"borderw=8:"           # Increased border width for a thicker outline
-                        f"bordercolor=black:"
-                        f"x=(w-text_w)/2:"      # Stays centered horizontally
-                        f"y=(h-text_h)/2 + h*0.2:" # Positioned slightly below the vertical center
+                        f"fontcolor=white:fontsize=120:borderw=8:bordercolor=black:"
+                        f"x=(w-text_w)/2:"
+                        f"y=(h-text_h)/2 + h*0.2:"
                         f"enable='between(t,{start},{end})'"
                         f"{output_stream_label};\n"
                     )
@@ -131,13 +94,12 @@ async def handler(job):
         
         final_video_map = current_video_stream
 
-        # --- 3. Build the FFmpeg Command ---
+        # --- 3. Build and Execute the FFmpeg Command ---
         ffmpeg_cmd = ['ffmpeg', '-y']
         for path in input_video_paths:
             ffmpeg_cmd.extend(['-i', path])
         ffmpeg_cmd.extend(['-i', narration_audio_path])
         
-        # Using -filter_complex_script is the most robust method for this
         ffmpeg_cmd.extend(['-filter_complex_script', filter_script_path])
         
         audio_input_index = len(input_video_paths)
@@ -151,7 +113,6 @@ async def handler(job):
             output_video_path
         ])
 
-        # --- 4. Execute FFmpeg ---
         print(f"Executing FFmpeg with filter script: {filter_script_path}")
         try:
             result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
@@ -161,13 +122,13 @@ async def handler(job):
             print("FFmpeg STDERR:", e.stderr)
             return {"error": "FFmpeg processing failed.", "details": e.stderr}
 
-        # --- 5. Return the Final Video ---
         with open(output_video_path, "rb") as f:
             video_data = f.read()
         base64_video = base64.b64encode(video_data).decode('utf-8')
         return { "video_base64": base64_video, "filename": os.path.basename(output_video_path) }
 
-runpod.serverless.start({"handler": handler})
+# Start the RunPod serverless handler
+# runpod.serverless.start({"handler": handler})
 # =====================================================================================
 #  LOCAL TESTING BLOCK 
 # =====================================================================================
@@ -214,7 +175,7 @@ if __name__ == '__main__':
         if "details" in result:
             print(f"Details: {result['details']}")
     else:
-        output_filename = "local_test_output5.mp4"
+        output_filename = "local_test_output7.mp4"
         with open(output_filename, "wb") as f:
             f.write(base64.b64decode(result['video_base64']))
         
