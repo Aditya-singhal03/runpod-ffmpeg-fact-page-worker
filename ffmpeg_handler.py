@@ -7,6 +7,34 @@ import tempfile
 import json
 import requests
 
+def upload_to_gofile(file_path):
+    """Uploads a file to GoFile.io and returns the download link."""
+    try:
+        # 1. Get a server to upload to
+        server_response = requests.get("https://api.gofile.io/servers")
+        server_response.raise_for_status()
+        server = server_response.json()["data"]["servers"][0]["name"]
+        print(f"GoFile server selected: {server}")
+
+        # 2. Upload the file
+        with open(file_path, 'rb') as f:
+            files = {'file': f}
+            upload_response = requests.post(f"https://{server}.gofile.io/uploadFile", files=files)
+        
+        upload_response.raise_for_status()
+        upload_data = upload_response.json()["data"]
+        download_link = upload_data["downloadPage"]
+        print(f"File uploaded successfully. Download link: {download_link}")
+        
+        return download_link
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error uploading to GoFile.io: {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred during upload: {e}")
+        return None
+
 def ffmpeg_escape(text):
     """Cleans text for use in an FFmpeg drawtext filter's text option."""
     text = str(text)
@@ -123,10 +151,18 @@ async def handler(job):
             print("FFmpeg STDERR:", e.stderr)
             return {"error": "FFmpeg processing failed.", "details": e.stderr}
 
-        with open(output_video_path, "rb") as f:
-            video_data = f.read()
-        base64_video = base64.b64encode(video_data).decode('utf-8')
-        return { "video_base64": base64_video, "filename": os.path.basename(output_video_path) }
+        print(f"Uploading final video from {output_video_path}...")
+        download_url = upload_to_gofile(output_video_path)
+
+        if not download_url:
+            return {"error": "Video was generated but failed to upload."}
+        
+        # --- 5. Return the URL, not the file data ---
+        return {
+            "video_url": download_url,
+            "filename": os.path.basename(output_video_path)
+        }
+
 
 # Start the RunPod serverless handler
 runpod.serverless.start({"handler": handler})
