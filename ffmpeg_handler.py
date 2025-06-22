@@ -128,7 +128,7 @@ async def handler(job):
         return { "video_base64": base64_video, "filename": os.path.basename(output_video_path) }
 
 # Start the RunPod serverless handler
-# runpod.serverless.start({"handler": handler})
+runpod.serverless.start({"handler": handler})
 # =====================================================================================
 #  LOCAL TESTING BLOCK 
 # =====================================================================================
@@ -175,7 +175,7 @@ if __name__ == '__main__':
         if "details" in result:
             print(f"Details: {result['details']}")
     else:
-        output_filename = "local_test_output7.mp4"
+        output_filename = "local_test_output.mp4"
         with open(output_filename, "wb") as f:
             f.write(base64.b64decode(result['video_base64']))
         
