@@ -5,27 +5,51 @@ import base64
 import tempfile
 import json
 import requests
+from urllib.parse import quote
 
 def upload_to_gofile(file_path):
-    """Uploads a file to GoFile.io and returns the download link."""
+    """Uploads a file to a specific GoFile.io account and returns the direct download link."""
+    
+    # 1. Get secrets from environment variables. This is the secure way.
+    api_token = os.environ.get('GOFILE_API_TOKEN')
+    folder_id = os.environ.get('GOFILE_FOLDER_ID') # Optional: The ID of a folder in your account
+
+    if not api_token:
+        print("ERROR: GOFILE_API_TOKEN environment variable not set.")
+        return None
+
     try:
-        # 1. Get a server to upload to
+        # 2. Get the best available server. No change here.
         server_response = requests.get("https://api.gofile.io/servers")
         server_response.raise_for_status()
         server = server_response.json()["data"]["servers"][0]["name"]
         print(f"GoFile server selected: {server}")
 
-        # 2. Upload the file
+        # 3. Prepare the authenticated upload request.
         with open(file_path, 'rb') as f:
-            files = {'file': f}
-            upload_response = requests.post(f"https://{server}.gofile.io/uploadFile", files=files)
+            files = {'file': (os.path.basename(file_path), f)}
+            
+            headers = {'Authorization': f'Bearer {api_token}'}
+            data = {'folderId': folder_id} if folder_id else {}
+
+            # The upload request now sends a `data` payload alongside the `files`.
+            upload_response = requests.post(
+                f"https://{server}.gofile.io/uploadFile", 
+                files=files,
+                headers=headers,
+                data=data
+            )
         
+        print(os.path.basename(file_path))
         upload_response.raise_for_status()
         upload_data = upload_response.json()["data"]
-        download_link = upload_data["downloadPage"]
-        print(f"File uploaded successfully. Download link: {download_link}")
+        dashboard_link = upload_data["downloadPage"]
+        content_id = upload_data["id"]
+        filename = os.path.basename(file_path)
+        encoded_filename = quote(filename)
+        final_link = f"https://{server}.gofile.io/download/web/{content_id}/{encoded_filename}"
         
-        return download_link
+        return dashboard_link , final_link
 
     except requests.exceptions.RequestException as e:
         print(f"Error uploading to GoFile.io: {e}")
@@ -157,14 +181,15 @@ async def handler(job):
             return {"error": "FFmpeg processing failed.", "details": e.stderr}
 
         print(f"Uploading final video from {output_video_path}...")
-        download_url = upload_to_gofile(output_video_path)
+        dashboard_link, final_link = upload_to_gofile(output_video_path)
 
-        if not download_url:
+        if not dashboard_link:
             return {"error": "Video was generated but failed to upload."}
         
         # --- 5. Return the URL, not the file data ---
         return {
-            "video_url": download_url,
+            "video_url": final_link,
+            "dashboard_url": dashboard_link,
             "filename": os.path.basename(output_video_path)
         }
 
