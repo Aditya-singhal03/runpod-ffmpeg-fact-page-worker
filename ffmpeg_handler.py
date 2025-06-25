@@ -32,7 +32,7 @@ def upload_to_r2(file_path):
         endpoint_url=endpoint_url,
         aws_access_key_id=access_key_id,
         aws_secret_access_key=secret_access_key,
-        region_name='auto'
+        region_name='apac'
     )
     
     object_name = os.path.basename(file_path)
