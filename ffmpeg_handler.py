@@ -22,6 +22,7 @@ def upload_to_r2(file_path):
         print(f"ERROR: Missing required R2 environment variable: {e}")
         return None
 
+
     # 2. Construct the R2 endpoint URL.
     endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
     
@@ -51,7 +52,7 @@ def upload_to_r2(file_path):
         # Ensure the base URL doesn't have a trailing slash.
         final_url = f"{public_url_base.rstrip('/')}/{quote(object_name)}"
         
-        print(f"File uploaded successfully. Public URL: {final_url}")
+        print(f"File uploaded successfully. Publlic URL: {final_url}")
         return final_url
 
     except Exception as e:
@@ -181,15 +182,14 @@ async def handler(job):
             return {"error": "FFmpeg processing failed.", "details": e.stderr}
 
         print(f"Uploading final video from {output_video_path}...")
-        dashboard_link, final_link = upload_to_gofile(output_video_path)
+        final_url = upload_to_r2(output_video_path)
 
-        if not dashboard_link:
+        if not final_url:
             return {"error": "Video was generated but failed to upload."}
         
         # --- 5. Return the URL, not the file data ---
         return {
-            "video_url": final_link,
-            "dashboard_url": dashboard_link,
+            "video_url": final_url,
             "filename": os.path.basename(output_video_path)
         }
 
