@@ -6,56 +6,56 @@ import tempfile
 import json
 import requests
 from urllib.parse import quote
+import boto3
 
-def upload_to_gofile(file_path):
-    """Uploads a file to a specific GoFile.io account and returns the direct download link."""
+def upload_to_r2(file_path):
+    """Uploads a file to a Cloudflare R2 bucket and returns the public URL."""
     
-    # 1. Get secrets from environment variables. This is the secure way.
-    api_token = os.environ.get('GOFILE_API_TOKEN')
-    folder_id = os.environ.get('GOFILE_FOLDER_ID') # Optional: The ID of a folder in your account
-
-    if not api_token:
-        print("ERROR: GOFILE_API_TOKEN environment variable not set.")
+    # 1. Get R2 credentials and bucket info from environment variables.
+    try:
+        account_id = os.environ['R2_ACCOUNT_ID']
+        access_key_id = os.environ['R2_ACCESS_KEY_ID']
+        secret_access_key = os.environ['R2_SECRET_ACCESS_KEY']
+        bucket_name = os.environ['R2_BUCKET_NAME']
+        public_url_base = os.environ['R2_PUBLIC_URL']
+    except KeyError as e:
+        print(f"ERROR: Missing required R2 environment variable: {e}")
         return None
+
+    # 2. Construct the R2 endpoint URL.
+    endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+    
+    # 3. Create an S3 client configured for R2.
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        region_name='auto'
+    )
+    
+    object_name = os.path.basename(file_path)
 
     try:
-        # 2. Get the best available server. No change here.
-        server_response = requests.get("https://api.gofile.io/servers")
-        server_response.raise_for_status()
-        server = server_response.json()["data"]["servers"][0]["name"]
-        print(f"GoFile server selected: {server}")
-
-        # 3. Prepare the authenticated upload request.
-        with open(file_path, 'rb') as f:
-            files = {'file': (os.path.basename(file_path), f)}
-            
-            headers = {'Authorization': f'Bearer {api_token}'}
-            data = {'folderId': folder_id} if folder_id else {}
-
-            # The upload request now sends a `data` payload alongside the `files`.
-            upload_response = requests.post(
-                f"https://{server}.gofile.io/uploadFile", 
-                files=files,
-                headers=headers,
-                data=data
-            )
+        print(f"Uploading {object_name} to R2 bucket {bucket_name}...")
         
-        print(os.path.basename(file_path))
-        upload_response.raise_for_status()
-        upload_data = upload_response.json()["data"]
-        dashboard_link = upload_data["downloadPage"]
-        content_id = upload_data["id"]
-        filename = os.path.basename(file_path)
-        encoded_filename = quote(filename)
-        final_link = f"https://{server}.gofile.io/download/web/{content_id}/{encoded_filename}"
+        # 4. Upload the file.
+        s3_client.upload_file(
+            file_path,
+            bucket_name,
+            object_name,
+            ExtraArgs={'ContentType': 'video/mp4'} # Set the correct content type
+        )
         
-        return dashboard_link , final_link
+        # 5. Construct the final public URL.
+        # Ensure the base URL doesn't have a trailing slash.
+        final_url = f"{public_url_base.rstrip('/')}/{quote(object_name)}"
+        
+        print(f"File uploaded successfully. Public URL: {final_url}")
+        return final_url
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error uploading to GoFile.io: {e}")
-        return None
     except Exception as e:
-        print(f"An unexpected error occurred during upload: {e}")
+        print(f"An unexpected error occurred during R2 upload: {e}")
         return None
 
 def ffmpeg_escape(text):

@@ -1,7 +1,4 @@
-# requirements.txt for the FFmpeg Worker
-
-# Required for RunPod Serverless functionality
+# requirements.txt
 runpod
-
-# Required for the download_file helper function to fetch video URLs
 requests
+boto3
