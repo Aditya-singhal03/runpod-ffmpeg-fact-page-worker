@@ -201,16 +201,19 @@ async def handler(job):
         
         video_filter_string = ",".join(video_filters)
         
-        # Build final FFmpeg command
+        # Build final FFmpeg command - calculate how many loops we actually need
+        # Since video will be 2x speed, we need 2x narration duration of source video
+        needed_video_duration = narration_duration * 2
+        
         final_cmd = [
             'ffmpeg', '-y', '-threads', '0',
-            '-stream_loop', '-1', '-i', intermediate_video,  # Loop video
+            '-stream_loop', '10', '-t', str(needed_video_duration), '-i', intermediate_video,  # Loop only as needed
             '-i', narration_audio_path
         ]
         
         # Add background music if provided
         if background_music_path:
-            final_cmd.extend(['-stream_loop', '-1', '-i', background_music_path])
+            final_cmd.extend(['-stream_loop', '10', '-t', str(narration_duration), '-i', background_music_path])
             audio_filter = f"[1:a]volume=1.0[narration];[2:a]volume=0.25[bgm];[narration][bgm]amix=inputs=2:duration=first[final_a]"
             final_cmd.extend(['-filter_complex', f"[0:v]{video_filter_string}[final_v];{audio_filter}"])
             final_cmd.extend(['-map', '[final_v]', '-map', '[final_a]'])
