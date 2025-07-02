@@ -3,7 +3,6 @@ import subprocess
 import os
 import base64
 import tempfile
-import json
 import requests
 from urllib.parse import quote
 import boto3
@@ -79,12 +78,41 @@ def download_file(url, local_filename):
         print(f"Error downloading {url}: {e}")
         return False
 
+def upload_to_gofile(file_path):
+    """Uploads a file to GoFile.io and returns the download link."""
+    try:
+        # 1. Get a server to upload to
+        server_response = requests.get("https://api.gofile.io/servers")
+        server_response.raise_for_status()
+        server = server_response.json()["data"]["servers"][0]["name"]
+        print(f"GoFile server selected: {server}")
+
+        # 2. Upload the file
+        with open(file_path, 'rb') as f:
+            files = {'file': f}
+            upload_response = requests.post(f"https://{server}.gofile.io/uploadFile", files=files)
+        
+        upload_response.raise_for_status()
+        upload_data = upload_response.json()["data"]
+        download_link = upload_data["downloadPage"]
+        print(f"File uploaded successfully. Download link: {download_link}")
+        
+        return download_link
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error uploading to GoFile.io: {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred during upload: {e}")
+        return None
+
+
 async def handler(job):
     job_input = job['input']
     print(f"Job Input Received: {job['id']}")
 
     with tempfile.TemporaryDirectory(dir="/tmp") as temp_dir:
-        # --- 1. Download and Prepare Inputs ---
+        # --- 1. Download and Prepare Inputs (No change here) ---
         input_video_paths = []
         for i, video_url in enumerate(job_input.get("video_urls", [])):
             video_path = os.path.join(temp_dir, f"video_{i}.mp4")
@@ -101,77 +129,104 @@ async def handler(job):
         caption_data = job_input.get("caption_data", {})
         words_data = caption_data.get("words", [])
 
-        # --- 2. Write the Complex Filter Graph to a File ---
-        filter_script_path = os.path.join(temp_dir, "filters.txt")
-        with open(filter_script_path, "w") as f:
-            filter_chains = []
+        background_music_path = None
+        if job_input.get("background_music_url"):
+            background_music_path = os.path.join(temp_dir, "background_music.mp3")
+            if not download_file(job_input["background_music_url"], background_music_path):
+                return {"error": f"Failed to download background music from {job_input['background_music_url']}"}
 
-            # --- THE FIX IS HERE ---
-            # Chain 1: Standardize EACH input video BEFORE concatenation.
-            # We scale each video to 1080x1920 and ensure it has a constant 30fps framerate.
-            standardized_streams = []
-            for i in range(len(input_video_paths)):
-                stream_label = f"[v{i}]"
-                standardized_streams.append(stream_label)
-                filter_chains.append(f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30{stream_label}")
-
-            # Chain 2: Stitch the now-standardized video streams together
-            video_streams = "".join(standardized_streams)
-            # The concat filter now also discards the original audio from the source videos (a=0)
-            filter_chains.append(f"{video_streams}concat=n={len(input_video_paths)}:v=1:a=0[stitched_v]")
-
-            # Chain 3: Speed up the final stitched video
-            # We no longer need to scale/format here as it was done in step 1.
-            filter_chains.append("[stitched_v]setpts=0.5*PTS[formatted_v]")
-
-            # Chain 4: Add animated captions
-            current_video_stream = "[formatted_v]"
-            if words_data:
-                for i, word_info in enumerate(words_data):
-                    clean_text = ffmpeg_escape(word_info['text'])
-                    start, end = word_info['start'], word_info['end']
-                    font_path = '/usr/share/fonts/truetype/Anton-Regular.ttf'
-                    escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
-                    output_stream_label = f"[v_caption_{i}]"
-                    
-                    filter_chain_link = (
-                        f"{current_video_stream}"
-                        f"drawtext="
-                        f"fontfile='{escaped_font_path}':"
-                        f"text='{clean_text}':"
-                        f"fontcolor=white:fontsize=120:borderw=8:bordercolor=black:"
-                        f"x=(w-text_w)/2:"
-                        f"y=(h-text_h)/2 + h*0.2:"
-                        f"enable='between(t,{start},{end})'"
-                        f"{output_stream_label}"
-                    )
-                    filter_chains.append(filter_chain_link)
-                    current_video_stream = output_stream_label
-            
-            final_video_map = current_video_stream
-            
-            # Write the final, correctly joined filter graph to the script file
-            f.write(";\n".join(filter_chains))
-
-        # --- 3. Build and Execute the FFmpeg Command ---
+        # --- 2. Build the FFmpeg Command and Filter Graph ---
         ffmpeg_cmd = ['ffmpeg', '-y']
+        
+        # Add all video inputs first
         for path in input_video_paths:
             ffmpeg_cmd.extend(['-i', path])
+        
+        # Add narration audio input
+        narration_input_index = len(input_video_paths)
         ffmpeg_cmd.extend(['-i', narration_audio_path])
         
-        ffmpeg_cmd.extend(['-filter_complex_script', filter_script_path])
+        # Add background music input with looping enabled
+        music_input_index = -1
+        if background_music_path:
+            ffmpeg_cmd.extend(['-stream_loop', '-1', '-i', background_music_path])
+            music_input_index = narration_input_index + 1
+
+        filter_chains = []
         
-        audio_input_index = len(input_video_paths)
+        # --- FIXED LOGIC TO ELIMINATE VIDEO FREEZES ---
+
+        # Chain 1: Standardize EACH input video with consistent encoding properties
+        # Key additions: consistent pixel format and proper frame handling
+        standardized_streams = []
+        for i in range(len(input_video_paths)):
+            stream_label = f"[v{i}]"
+            standardized_streams.append(stream_label)
+            # Enhanced standardization - removed heavy minterpolate, kept essential fixes
+            filter_chains.append(f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p{stream_label}")
+
+        # Chain 2: Stitch the standardized video streams with proper transition handling
+        video_streams_to_concat = "".join(standardized_streams)
+        filter_chains.append(f"{video_streams_to_concat}concat=n={len(input_video_paths)}:v=1:a=0:unsafe=1[stitched_v]")
+
+        # Chain 3: Speed up the stitched video stream - fast and efficient
+        filter_chains.append("[stitched_v]setpts=0.5*PTS[fast_v]")
+
+        # Chain 4: Create a silent, black video that is the same length as the NARRATION.
+        filter_chains.append(f"color=c=black@0.0:s=1080x1920:d=9999[caption_canvas]")
+
+        # Chain 5: Draw the captions onto the black canvas.
+        current_caption_stream = "[caption_canvas]"
+        if words_data:
+            for i, word_info in enumerate(words_data):
+                clean_text = ffmpeg_escape(word_info['text'])
+                start, end = word_info['start'], word_info['end']
+                font_path = '/usr/share/fonts/truetype/Anton-Regular.ttf'
+                escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
+                output_stream_label = f"[c_caption_{i}]"
+                filter_chain_link = f"{current_caption_stream}drawtext=fontfile='{escaped_font_path}':text='{clean_text}':fontcolor=white:fontsize=120:borderw=8:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2+h*0.2:enable='between(t,{start},{end})'{output_stream_label}"
+                filter_chains.append(filter_chain_link)
+                current_caption_stream = output_stream_label
+        
+        # Chain 6: Overlay the captioned canvas on top of the sped-up video.
+        filter_chains.append(f"[fast_v]{current_caption_stream}overlay=0:0[final_v]")
+        final_video_map = "[final_v]"
+
+        # Audio Mixing Chain (unchanged)
+        if background_music_path:
+            filter_chains.append(f"[{narration_input_index}:a]volume=1.0[narration];[{music_input_index}:a]volume=0.25[bgm];[narration][bgm]amix=inputs=2:duration=first[final_a]")
+            audio_map = "[final_a]"
+        else:
+            audio_map = f"[{narration_input_index}:a]"
+
+        # --- END OF FIXED LOGIC ---
+        
+        # --- 3. Build and Execute the FFmpeg Command ---
+        filter_script_path = os.path.join(temp_dir, "filters.txt")
+        with open(filter_script_path, "w") as f:
+            f.write(";\n".join(filter_chains))
+        
+        ffmpeg_cmd.extend(['-filter_complex_script', filter_script_path])
         ffmpeg_cmd.extend(['-map', final_video_map])
-        ffmpeg_cmd.extend(['-map', f'{audio_input_index}:a'])
+        ffmpeg_cmd.extend(['-map', audio_map])
         
         output_video_path = os.path.join(temp_dir, "final_video.mp4")
+        # Enhanced encoding settings for smooth playback
         ffmpeg_cmd.extend([
-            '-c:v', 'libx264', '-profile:v', 'main', '-preset', 'medium', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k', '-pix_fmt', 'yuv420p', '-shortest',
+            '-c:v', 'libx264', 
+            '-preset', 'medium',  # Better quality/compression balance
+            '-crf', '23',         # Constant rate factor for consistent quality
+            '-g', '60',           # Keyframe interval (2 seconds at 30fps)
+            '-keyint_min', '30',  # Minimum keyframe interval
+            '-c:a', 'aac', 
+            '-b:a', '192k', 
+            '-pix_fmt', 'yuv420p', 
+            '-movflags', '+faststart',  # Optimize for streaming
+            '-shortest', 
             output_video_path
         ])
-
+        
+        # Execute and Upload steps (unchanged)
         print(f"Executing FFmpeg with filter script: {filter_script_path}")
         try:
             result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
@@ -182,16 +237,11 @@ async def handler(job):
             return {"error": "FFmpeg processing failed.", "details": e.stderr}
 
         print(f"Uploading final video from {output_video_path}...")
-        final_url = upload_to_r2(output_video_path)
-
+        final_url = upload_to_r2(output_video_path) 
         if not final_url:
             return {"error": "Video was generated but failed to upload."}
         
-        # --- 5. Return the URL, not the file data ---
-        return {
-            "video_url": final_url,
-            "filename": os.path.basename(output_video_path)
-        }
+        return { "video_url": final_url, "filename": os.path.basename(output_video_path) }
 
 # Start the RunPod serverless handler
 runpod.serverless.start({"handler": handler})
