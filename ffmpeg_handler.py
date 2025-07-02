@@ -136,7 +136,7 @@ async def handler(job):
                 return {"error": f"Failed to download background music from {job_input['background_music_url']}"}
 
         # --- 2. Build the FFmpeg Command and Filter Graph ---
-        ffmpeg_cmd = ['ffmpeg', '-y']
+        ffmpeg_cmd = ['ffmpeg', '-y', '-threads', '0']  # Use all available CPU cores
         
         # Add all video inputs first
         for path in input_video_paths:
@@ -211,17 +211,18 @@ async def handler(job):
         ffmpeg_cmd.extend(['-map', audio_map])
         
         output_video_path = os.path.join(temp_dir, "final_video.mp4")
-        # Enhanced encoding settings for smooth playback
+        # Enhanced encoding settings for smooth playback with better threading
         ffmpeg_cmd.extend([
             '-c:v', 'libx264', 
-            '-preset', 'medium',  # Better quality/compression balance
-            '-crf', '23',         # Constant rate factor for consistent quality
-            '-g', '60',           # Keyframe interval (2 seconds at 30fps)
-            '-keyint_min', '30',  # Minimum keyframe interval
+            '-preset', 'faster',      # Changed from 'medium' to 'faster' for speed
+            '-threads', '0',          # Use all CPU cores for encoding
+            '-crf', '23',         
+            '-g', '60',           
+            '-keyint_min', '30',  
             '-c:a', 'aac', 
             '-b:a', '192k', 
             '-pix_fmt', 'yuv420p', 
-            '-movflags', '+faststart',  # Optimize for streaming
+            '-movflags', '+faststart',  
             '-shortest', 
             output_video_path
         ])
